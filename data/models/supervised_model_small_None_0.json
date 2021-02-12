@@ -1,0 +1,1 @@
+{"day_windows": [3, 5, 7], "functions": ["mean"], "resampling_method": "linear", "scaler": "minmax", "variables": ["revenue", "invoices"], "hm_days": 30, "country": null, "cv": 2}
