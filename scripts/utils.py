@@ -8,10 +8,11 @@ import re
 import json
 import geopandas as gpd
 
-
 # Hong Kong Multipolygon built manually using https://www.keene.edu/campus/maps/tool/
 # other geocoords here https://gist.github.com/markmarkoh/2969317
 # https://melaniesoek0120.medium.com/data-visualization-how-to-plot-a-map-with-geopandas-in-python-73b10dcd4b4b
+RAW_DATA_URL = "https://raw.githubusercontent.com/aavail/ai-workflow-capstone/master/"
+DATA_FOLDER = os.path.join(".", "data")
 
 
 def download_data():
@@ -20,9 +21,8 @@ def download_data():
 
     :return: training and production data.
     """
-    data_base_url = "https://raw.githubusercontent.com/aavail/ai-workflow-capstone/master/"
-    data_train_url = os.path.join(data_base_url, "cs-train")
-    data_production_url = os.path.join(data_base_url, "cs-production")
+    data_train_url = os.path.join(RAW_DATA_URL, "cs-train")
+    data_production_url = os.path.join(RAW_DATA_URL, "cs-production")
 
     train_year_month_couples = pd.date_range('2017-11-01', '2019-07-01', freq='MS').strftime("%Y-%m").tolist()
     production_year_month_couples = pd.date_range('2019-08-01', '2019-12-01', freq='MS').strftime("%Y-%m").tolist()
@@ -203,14 +203,16 @@ def plot_geodata(df):
     country_prices.replace("EIRE", "Ireland", inplace=True)
 
     # load Hong Kong coords data, built manually
-    with open("./data/hk_coords.json", 'r') as f:
+    hk_path = os.path.join(DATA_FOLDER, "hk_coords.json")
+    with open(hk_path, 'r') as f:
         hk = json.load(f)
 
     # read shapefile using Geopandas
-    shapefile = './data/Longitude_Graticules_and_World_Countries_Boundaries-shp/' \
-                '99bfd9e7-bb42-4728-87b5-07f8c8ac631c2020328-1-1vef4ev.lu5nk.shp'
+    shapefile_path = os.path.join(DATA_FOLDER,
+                                  'Longitude_Graticules_and_World_Countries_Boundaries-shp',
+                                  '99bfd9e7-bb42-4728-87b5-07f8c8ac631c2020328-1-1vef4ev.lu5nk.shp')
 
-    gdf = gpd.read_file(shapefile)[['CNTRY_NAME', 'geometry']]
+    gdf = gpd.read_file(shapefile_path)[['CNTRY_NAME', 'geometry']]
     gdf = gdf.append(pd.DataFrame(data=[["Hong Kong", MultiPolygon(hk)]], columns=gdf.columns), ignore_index=True)
 
     merged_df = pd.merge(gdf,
