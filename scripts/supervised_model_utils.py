@@ -1,12 +1,17 @@
 import joblib
 import os
+import sys
+from warnings import simplefilter
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.exceptions import ConvergenceWarning
 from tqdm import tqdm
 import json
 
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.neural_network import MLPRegressor
+from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.pipeline import Pipeline
@@ -14,9 +19,13 @@ from sklearn.model_selection import ParameterGrid, GridSearchCV
 
 from scripts.utils import ts_conversion
 
-DATA_FOLDER = os.path.join("..", "data")
+DATA_FOLDER = os.path.join(".", "data")
 MODEL_FOLDER = os.path.join(DATA_FOLDER, "models")
 TRAINING_DF_PATH = os.path.join(DATA_FOLDER, "df_training.csv")
+
+if not sys.warnoptions:
+    simplefilter("ignore", category=ConvergenceWarning)
+    os.environ["PYTHONWARNINGS"] = 'ignore'
 
 
 def resample_df(df, how, verbose=0):
@@ -70,11 +79,13 @@ def convert_to_supervised(df, variables=("revenue", "invoices"), hm_days=30, fun
 
 
 def add_supervised_variables(df, variables, functions=("mean",), day_windows=(3, 5, 7)):
-    variables = list(variables)
-
     func_names = {"mean": np.mean, "std": np.std, "var": np.var, "sum": np.sum}
 
-    # build rolling means for variables with input window days
+    assert all([f in func_names.keys() for f in functions]), "Acceptable functions are: 'mean', 'std', 'var', 'sum'."
+
+    variables = list(variables)
+
+    # build rolling means/stds/vars/sums for variables with input window days
     df_with_new_vars = pd.DataFrame(index=df.index)
     for dw in day_windows:
         for func_name in functions:
@@ -136,24 +147,39 @@ def split_train_test(df, training_perc=0.8, hm_days=30, verbose=0):
     return X, y, X_train, y_train, X_test, y_test
 
 
-def find_best_model(scaler, X_train, y_train, cv=5, verbose=0):
+def find_best_model(scaler, algorithm, X_train, y_train, cv=5, verbose=0):
     assert scaler in ("standard", "minmax", None), "scaler must be either None or one of 'standard', 'minmax'."
+
+    assert algorithm in ("random_forest", "mlp"), "algorithm must be 'random_forest' or 'mlp'."
+
+    if algorithm == "random_forest":
+        alg = RandomForestRegressor()
+
+        param_grid = {
+            'alg__n_estimators': [50, 100, 200, 500],
+            'alg__criterion': ["mse", "mae"]
+        }
+    elif algorithm == "mlp":
+        alg = MLPRegressor()
+
+        param_grid = {
+            'alg__hidden_layer_sizes': [(30,), (30, 10), (50,)],
+            'alg__solver': ["lbfgs"],
+            'alg__alpha': [0.001, 0.0001],
+            'alg__max_iter': [5_000],
+            'alg__activation': ['relu', 'tanh']
+        }
 
     if scaler is not None:
         if scaler == "standard":
             scaler = StandardScaler()
         elif scaler == "minmax":
             scaler = MinMaxScaler()
-        pipe = Pipeline([('scaler', scaler), ('rfr', RandomForestRegressor())])
+        pipe = Pipeline([('scaler', scaler), ('alg', alg)])
     else:
-        pipe = Pipeline([('rfr', RandomForestRegressor())])
+        pipe = Pipeline([('alg', alg)])
 
     # Parameters of pipelines can be set using ‘__’ separated parameter names:
-    param_grid = {
-        'rfr__n_estimators': [50, 100, 200, 500],
-        'rfr__criterion': ["mse", "mae"],
-    }
-
     search = GridSearchCV(pipe, param_grid, n_jobs=-1, cv=cv, verbose=verbose)
 
     search.fit(X_train, y_train)
@@ -163,12 +189,6 @@ def find_best_model(scaler, X_train, y_train, cv=5, verbose=0):
         print(search.best_params_)
 
     model = search.best_estimator_
-
-    return model
-
-
-def train_model(model, X, y):
-    model.fit(X, y)
 
     return model
 
@@ -189,7 +209,7 @@ def evaluate_model(model, X_test, y_test, plot_eval, plot_avg_threshold=np.inf):
         ax.legend()
         plt.show(block=False)
 
-    return test_mae, test_rmse
+    return test_mae, test_rmse, test_avg
 
 
 def create_train_test(country, resampling_method="linear", variables=("revenue", "invoices"), hm_days=30,
@@ -204,25 +224,27 @@ def create_train_test(country, resampling_method="linear", variables=("revenue",
 
 def build_and_eval_supervised_model(country, resampling_method="linear", variables=("revenue", "invoices"), hm_days=30,
                                     functions=("mean",), day_windows=(3, 5, 7), training_perc=0.8, scaler="standard",
-                                    cv=5, plot_eval=False, plot_avg_threshold=np.inf, verbose=0):
+                                    algorithm="random_forest", cv=5, plot_eval=False, plot_avg_threshold=np.inf,
+                                    verbose=0):
     X, y, X_train, y_train, X_test, y_test = create_train_test(country, resampling_method, variables,
                                                                hm_days, functions, day_windows, training_perc)
 
-    model = find_best_model(scaler, X_train, y_train, cv, verbose)
+    model = find_best_model(scaler, algorithm, X_train, y_train, cv, verbose)
 
-    model = train_model(model, X, y)
+    model.fit(X, y)
 
-    test_mae, test_rmse = evaluate_model(model, X_test, y_test, plot_eval, plot_avg_threshold)
+    test_mae, test_rmse, test_avg = evaluate_model(model, X_test, y_test, plot_eval, plot_avg_threshold)
 
-    return model, test_mae, test_rmse
+    return model, test_mae, test_rmse, test_avg
 
 
 def param_grid_selector(param_dim):
     if param_dim == "small":
         gs_params = {
             'variables': [(),
-                          ('revenue', 'invoices'), ],
+                          ('revenue', 'invoices')],
             'scaler': ['minmax', None],
+            'algorithm': ['random_forest', 'mlp'],
             'resampling_method': ['linear'],
             'functions': [('mean',)],
             'day_windows': [(3,), (3, 5, 7), (7, 14)]
@@ -234,6 +256,7 @@ def param_grid_selector(param_dim):
                           ('revenue',),
                           ('revenue', 'invoices', 'purchases')],
             'scaler': ['standard', 'minmax', None],
+            'algorithm': ['random_forest', 'mlp'],
             'resampling_method': ['linear'],
             'functions': [('mean',), ('mean', 'std')],
             'day_windows': [(3,), (7,), (3, 5), (3, 5, 7), (7, 14)]
@@ -247,6 +270,7 @@ def param_grid_selector(param_dim):
                           ('revenue', 'invoices'),
                           ('revenue', 'invoices', 'purchases')],
             'scaler': ['standard', 'minmax', None],
+            'algorithm': ['random_forest', 'mlp'],
             'resampling_method': ['linear', 'ffill'],
             'functions': [('mean',), ('mean', 'std')],
             'day_windows': [(3,), (5,), (7,), (3, 5), (3, 5, 7), (7, 14), (3, 5, 7, 14)]
@@ -255,7 +279,7 @@ def param_grid_selector(param_dim):
     return gs_params
 
 
-def grid_search_pipeline(country, cv, param_dim, plot_if_better=False, hm_days=30):
+def grid_search_pipeline(country, cv=2, param_dim="small", plot_if_better=False, hm_days=30):
     assert param_dim in ("small", "medium", "large"), "param_dim must be one of 'small', 'medium', 'large'."
 
     results = {}
@@ -272,31 +296,32 @@ def grid_search_pipeline(country, cv, param_dim, plot_if_better=False, hm_days=3
 
     for i, pg in enumerate(tqdm(param_grid)):
 
-        model, test_mae, test_rmse = build_and_eval_supervised_model(country=country,
-                                                                     resampling_method=pg["resampling_method"],
-                                                                     variables=pg["variables"],
-                                                                     hm_days=hm_days,
-                                                                     functions=pg["functions"],
-                                                                     day_windows=pg["day_windows"],
-                                                                     training_perc=0.8,
-                                                                     scaler=pg["scaler"],
-                                                                     cv=cv,
-                                                                     plot_eval=plot_if_better,
-                                                                     plot_avg_threshold=plot_avg_threshold,
-                                                                     verbose=0)
-        avg = round(np.mean([test_mae, test_rmse]), 2)
+        model, test_mae, test_rmse, test_avg = build_and_eval_supervised_model(country=country,
+                                                                               resampling_method=pg[
+                                                                                   "resampling_method"],
+                                                                               variables=pg["variables"],
+                                                                               hm_days=hm_days,
+                                                                               functions=pg["functions"],
+                                                                               day_windows=pg["day_windows"],
+                                                                               training_perc=0.8,
+                                                                               scaler=pg["scaler"],
+                                                                               algorithm=pg["algorithm"],
+                                                                               cv=cv,
+                                                                               plot_eval=plot_if_better,
+                                                                               plot_avg_threshold=plot_avg_threshold,
+                                                                               verbose=0)
         pg["hm_days"] = hm_days
         pg["country"] = country
         pg["cv"] = cv
 
-        if avg < plot_avg_threshold:
-            plot_avg_threshold = avg
+        if test_avg < plot_avg_threshold:
+            plot_avg_threshold = test_avg
             best_model = model
             best_params = pg
 
         errors = {"test_mae": test_mae,
                   "test_rmse": test_rmse,
-                  "avg": avg}
+                  "avg": test_avg}
         results[i] = {"params": pg, "errors": errors}
 
     sorted_results_by_avg = sorted(results.items(), key=lambda x_y: x_y[1]['errors']['avg'])
@@ -309,7 +334,7 @@ def save_model(model, model_params, model_name):
 
     # find the model version name
     all_files_in_models = os.listdir(MODEL_FOLDER)
-    all_model_names = [file for file in all_files_in_models if file.endswith(".joblib")]
+    all_model_names = [file.replace(".joblib", "") for file in all_files_in_models if file.endswith(".joblib")]
     version_numbers = [int(_model_name.split("_")[-1]) for _model_name in all_model_names]
     if len(version_numbers) == 0:
         new_version_number = "0"
@@ -330,6 +355,8 @@ def save_model(model, model_params, model_name):
 
     print(f"Model and params saved in {MODEL_FOLDER}.")
 
+    return model_name
+
 
 def load_model(model_name):
     model_name = model_name.replace(".joblib", "")
@@ -339,6 +366,13 @@ def load_model(model_name):
     # load model
     loaded_model = joblib.load(model_loading_path)
 
+    return loaded_model
+
+
+def load_model_params(model_name):
+    model_name = model_name.replace(".joblib", "")
+    params_loading_path = os.path.join(MODEL_FOLDER, model_name + ".json")
+
     # load params
     with open(params_loading_path) as f:
         loaded_params = json.load(f)
@@ -347,7 +381,28 @@ def load_model(model_name):
     for ll in ["day_windows", "functions", "variables"]:
         loaded_params[ll] = tuple(loaded_params[ll])
 
-    return loaded_model, loaded_params
+    return loaded_params
+
+
+def train_model(country, param_dim):
+    """
+    Train the model using a double gridsearch (one for the data trasformation, one for the model hyperparameters)
+    and save it, ready to be called.
+
+    :param country: None or a name of a country where to train the model.
+    :param param_dim: 'small', 'medium' or 'large', indicates the dimension of the parameter grid.
+    :return: saved model name.
+    """
+
+    best_model, best_params, r = grid_search_pipeline(country, param_dim=param_dim)
+    best_avg_score = r[0][1]["errors"]["avg"]
+
+    print(f"Best score on test set: {best_avg_score}")
+
+    model_name = f"supervised_model_{param_dim}_{country}"
+    model_name = save_model(best_model, best_params, model_name)
+
+    return model_name
 
 
 def score_model(model, model_params, starting_date):
@@ -376,17 +431,62 @@ def score_model(model, model_params, starting_date):
     return prediction
 
 
-if __name__ == "__main__":
+def compare_best_with_baseline(country, best_model_name=None):
 
+    # take the one with highest version number
+    if best_model_name is None:
+        all_files_in_models = os.listdir(MODEL_FOLDER)
+        all_models = [file for file in all_files_in_models if file.endswith(".joblib")]
+        all_models = sorted(all_models, key=lambda x: int(x.replace(".joblib", "").split("_")[-1]))
+        best_model_name = all_models[-1]
+        print(best_model_name)
+
+    X, y, X_train, y_train, X_test, y_test = create_train_test(country)
+
+    reg = LinearRegression()
+    reg.fit(X_train, y_train)
+    base_pred = reg.predict(X_test)
+
+    best_model = load_model(best_model_name)
+    bm_pred = best_model.predict(X_test)
+
+    baseline_err = abs(y_test - base_pred)
+    bm_err = abs(y_test - bm_pred)
+
+    xlabs = pd.date_range("2019-04-03", "2019-07-01")
+
+    fig, ax = plt.subplots(1, 1, figsize=(20, 8))
+    ax.set_title("Baseline model vs Best model")
+    ax.set_ylabel("Error")
+    ax.set_xlabel("Date")
+
+    ax.scatter(xlabs, baseline_err, s=80, alpha=1, label="baseline model error", color="purple", zorder=2)
+    ax.scatter(xlabs, bm_err, s=80, alpha=1, label="best model error", color="green", zorder=2)
+
+    for i, (be, bm) in enumerate(zip(baseline_err, bm_err)):
+        if be <= bm:
+            c = "red"
+            lw = 3
+        else:
+            c = "orange"
+            lw = 1
+        ax.vlines(x=xlabs[i], ymin=min(be, bm), ymax=max(be, bm), lw=lw, color=c, zorder=1)
+
+    ax.legend()
+    plt.show()
+
+
+if __name__ == "__main__":
     country = None
     param_dim = "small"
-    hm_days = 30
-    cv = 2
-    best_model, best_params, r = grid_search_pipeline(country=country,
-                                                      cv=cv,
-                                                      param_dim=param_dim,
-                                                      plot_if_better=False,
-                                                      hm_days=hm_days)
+    testing_date = "2018-01-25"
 
-    model_name = f"supervised_model_{param_dim}_{country}"
-    save_model(best_model, best_params, model_name)
+    print("Training the Model")
+    model_name = train_model(country, param_dim)
+
+    model = load_model(model_name)
+    model_params = load_model_params(model_name)
+
+    print(f"Testing the model on {testing_date}")
+    prediction = score_model(model, model_params, testing_date)
+    print(prediction)
