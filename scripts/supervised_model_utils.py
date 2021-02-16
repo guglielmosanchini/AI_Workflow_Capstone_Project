@@ -23,9 +23,10 @@ from scripts.utils import ts_conversion
 from scripts.logger import update_train_log, update_predict_log
 
 
-DATA_DIR = os.path.join(ROOT_DIR, "data")
-MODEL_DIR = os.path.join(DATA_DIR, "models")
+DATA_DIR = os.path.join(ROOT_DIR, "data", "datasets")
+MODEL_DIR = os.path.join(ROOT_DIR, "data", "models")
 TRAINING_DF_PATH = os.path.join(DATA_DIR, "df_training.csv")
+PRODUCTION_DF_PATH = os.path.join(DATA_DIR, "df_production.csv")
 
 
 if not sys.warnoptions:
@@ -106,16 +107,20 @@ def add_supervised_variables(df, variables, functions=("mean",), day_windows=(3,
 
 def prepare_data_for_model(country, mode, resampling_method="linear", variables=("revenue", "invoices"), hm_days=30,
                            functions=("mean",), day_windows=(3, 5, 7), verbose=0):
-    assert mode in ("train", "test"), "mode parameter must be 'train' or 'test'."
+    assert mode in ("train", "test", "production"), "mode parameter must be 'train', 'test' or 'production'."
 
-    original_df = pd.read_csv(TRAINING_DF_PATH)
+    if mode != "production":
+        original_df = pd.read_csv(TRAINING_DF_PATH)
+    else:
+        original_df = pd.read_csv(PRODUCTION_DF_PATH)
+
     df = ts_conversion(original_df, country)
 
     resampled_df = resample_df(df, resampling_method, verbose)
 
     if mode == "train":
         sup_df = convert_to_supervised(resampled_df, variables, hm_days, functions, day_windows)
-    elif mode == "test":
+    elif mode in ("test", "production"):
         sup_df = add_supervised_variables(resampled_df, variables, functions, day_windows)
         sup_df = pd.merge(sup_df, resampled_df, on="date")
 
@@ -374,10 +379,10 @@ def save_model(model, model_params, model_name):
     return model_name, new_version_number
 
 
-def load_model(model_name=None):
+def load_model(model_name=None, country_name=None):
 
     if model_name is None:
-        model_name = find_last_model()
+        model_name = find_last_model(country_name)
         print(model_name)
 
     model_name = model_name.replace(".joblib", "")
@@ -440,12 +445,14 @@ def train_model(country, param_dim="small", test=False):
     return model_name
 
 
-def score_model(starting_dates, model_name=None, test=False):
+def score_model(starting_dates, model_name, test=False, mode="test"):
+
+    assert mode in ("test", "production"), "mode must be 'test' or 'production'"
 
     start_time = time.time()
 
-    if model_name is None:
-        model_name = find_last_model()
+    #if model_name is None:
+    #    model_name = find_last_model(country_name)
 
     # load model and params
     model, model_name = load_model(model_name)
@@ -453,7 +460,7 @@ def score_model(starting_dates, model_name=None, test=False):
     model_version = model_name.replace(".joblib", "").split("_")[-1]
 
     sup_df = prepare_data_for_model(country=model_params["country"],
-                                    mode="test",
+                                    mode=mode,
                                     resampling_method=model_params["resampling_method"],
                                     variables=model_params["variables"],
                                     hm_days=model_params["hm_days"],
@@ -525,12 +532,19 @@ def compare_best_with_baseline(country, best_model_name=None):
     plt.show()
 
 
-def find_last_model():
-    all_files_in_models = os.listdir(MODEL_DIR)
-    all_models = [file for file in all_files_in_models if file.endswith(".joblib")]
-    all_models = sorted(all_models, key=lambda x: int(x.replace(".joblib", "").split("_")[-1]))
-    best_model_name = all_models[-1]
+def find_last_model(country_name):
 
+    if country_name is None:
+        country_name = "None"
+
+    all_files_in_models = os.listdir(MODEL_DIR)
+    all_models = [file for file in all_files_in_models if (file.endswith(".joblib") and country_name in file)]
+    all_models = sorted(all_models, key=lambda x: int(x.replace(".joblib", "").split("_")[-1]))
+
+    if len(all_models) == 0:
+        raise FileNotFoundError
+
+    best_model_name = all_models[-1]
     return best_model_name
 
 
@@ -543,5 +557,5 @@ if __name__ == "__main__":
     model_name = train_model(country, param_dim)
 
     print(f"Testing the model on {testing_dates}")
-    prediction = score_model(testing_dates, model_name)
+    prediction = score_model(testing_dates, model_name=model_name)
     print(prediction)

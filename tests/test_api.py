@@ -67,7 +67,8 @@ def test_03_predict():
     """
     test the predict functionality
     """
-    request_json = {"query": ["2017-12-06", "2018-01-29", "2018-03-10"]}
+    request_json = {"query": [{"country": None,
+                               "starting_dates": ["2017-12-06", "2018-01-29"]}]}
 
     r = requests.post(f'{host}:{port}/predict', json=request_json)
     response = literal_eval(r.text)

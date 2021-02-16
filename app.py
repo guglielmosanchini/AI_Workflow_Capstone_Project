@@ -6,11 +6,12 @@ import numpy as np
 import pandas as pd
 
 from scripts.supervised_model_utils import load_model, score_model, train_model
-from scripts import ROOT_DIR
+from scripts import ROOT_DIR, AVAILABLE_COUNTRIES
 
 LOG_DIR = os.path.join(ROOT_DIR, "logs")
 
 app = Flask(__name__)
+
 
 @app.route("/")
 def landing():
@@ -33,25 +34,43 @@ def predict():
         return jsonify([])
 
     if not isinstance(request.json["query"], list):
-        print("ERROR API (predict): query must be a list of dates.")
+        print("ERROR API (predict): query must be a list containing a dictionary having 'country'"
+              " and 'starting_dates' as keys.")
+        return jsonify([])
+
+    if not isinstance(request.json["query"][0], dict):
+        print("ERROR API (predict): query must be a list containing a dictionary having 'country'"
+              " and 'starting_dates' as keys.")
+        return jsonify([])
+
+    if "country" not in request.json["query"][0]:
+        print("ERROR API (predict): missing 'country' specification.")
+        return jsonify([])
+
+    if request.json["query"][0]["country"] not in AVAILABLE_COUNTRIES:
+        print("ERROR API (predict): acceptable countries are", *AVAILABLE_COUNTRIES)
+        return jsonify([])
+
+    if "starting_dates" not in request.json["query"][0]:
+        print("ERROR API (predict): missing 'starting_dates' specification.")
         return jsonify([])
 
     try:
-        _ = [pd.Timestamp(sd) for sd in request.json["query"]]
+        _ = [pd.Timestamp(sd) for sd in request.json["query"][0]["starting_dates"]]
     except ValueError:
-        print("ERROR API (predict): list elements must be dates.")
+        print("ERROR API (predict): 'starting_dates' cannot be parsed correctly as dates.")
         return jsonify([])
 
     # extract the query
-    query = request.json['query']
+    query = request.json['query'][0]
 
     try:
-        model, model_name = load_model()
-    except FileNotFoundError as fnfe:
-        print("ERROR: no model is available.")
+        model, model_name = load_model(country_name=query['country'])
+    except FileNotFoundError:
+        print("ERROR: no model is available for this country. Train a model and retry.")
         return jsonify([])
 
-    _result = score_model(query, model_name)
+    _result = score_model(query['starting_dates'], model_name)
     result = []
 
     # convert numpy objects to ensure they are serializable
@@ -78,6 +97,10 @@ def train():
 
     if 'country' not in request.json['query'][0]:
         print("ERROR API (train): missing 'country' field in query.")
+        return jsonify([])
+
+    if request.json["query"][0]["country"] not in AVAILABLE_COUNTRIES:
+        print("ERROR API (predict): acceptable countries are", *AVAILABLE_COUNTRIES)
         return jsonify([])
 
     query = request.json['query'][0]

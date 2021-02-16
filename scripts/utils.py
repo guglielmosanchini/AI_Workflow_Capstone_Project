@@ -13,7 +13,7 @@ from scripts import ROOT_DIR
 # other geocoords here https://gist.github.com/markmarkoh/2969317
 # https://melaniesoek0120.medium.com/data-visualization-how-to-plot-a-map-with-geopandas-in-python-73b10dcd4b4b
 RAW_DATA_URL = "https://raw.githubusercontent.com/aavail/ai-workflow-capstone/master/"
-DATA_DIR = os.path.join(ROOT_DIR, "data")
+DATA_DIR = os.path.join(ROOT_DIR, "data", "datasets")
 
 
 def download_data():
@@ -154,7 +154,7 @@ def prepare_data(data):
     else:
         df = merged_data
 
-    # keep onyl the top 10 countries by revenue
+    # keep only the top 10 countries by revenue
     countries = df.groupby("country")["price"].sum().sort_values(ascending=False).iloc[:10].index.to_list()
     df = df.loc[df["country"].isin(countries), :].reset_index(drop=True)
 
@@ -280,3 +280,15 @@ def plot_revenue_evolution(df):
 
     return merged_revenue.plot(title="Revenue evolution in time",
                                labels=dict(index="date", value="revenue", variable="country"))
+
+
+if __name__ == "__main__":
+
+    # update training and production data downloading them from the web and cleaning them
+    merged_df = prepare_data("both")
+    train_df = merged_df.loc[merged_df["stage"] == "training", :].reset_index(drop=True)
+    prod_df = merged_df.loc[merged_df["stage"] == "production", :].reset_index(drop=True)
+    merged_df.drop("stage", 1, inplace=True)
+
+    train_df.to_csv(os.path.join(DATA_DIR, "df_training.csv"), index=False)
+    prod_df.to_csv(os.path.join(DATA_DIR, "df_production.csv"), index=False)
