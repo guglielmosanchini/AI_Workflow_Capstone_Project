@@ -7,12 +7,13 @@ from tqdm import tqdm
 import re
 import json
 import geopandas as gpd
+from scripts import ROOT_DIR
 
 # Hong Kong Multipolygon built manually using https://www.keene.edu/campus/maps/tool/
 # other geocoords here https://gist.github.com/markmarkoh/2969317
 # https://melaniesoek0120.medium.com/data-visualization-how-to-plot-a-map-with-geopandas-in-python-73b10dcd4b4b
 RAW_DATA_URL = "https://raw.githubusercontent.com/aavail/ai-workflow-capstone/master/"
-DATA_FOLDER = os.path.join(".", "data")
+DATA_DIR = os.path.join(ROOT_DIR, "data")
 
 
 def download_data():
@@ -203,12 +204,12 @@ def plot_geodata(df):
     country_prices.replace("EIRE", "Ireland", inplace=True)
 
     # load Hong Kong coords data, built manually
-    hk_path = os.path.join(DATA_FOLDER, "hk_coords.json")
+    hk_path = os.path.join(DATA_DIR, "hk_coords.json")
     with open(hk_path, 'r') as f:
         hk = json.load(f)
 
     # read shapefile using Geopandas
-    shapefile_path = os.path.join(DATA_FOLDER,
+    shapefile_path = os.path.join(DATA_DIR,
                                   'Longitude_Graticules_and_World_Countries_Boundaries-shp',
                                   '99bfd9e7-bb42-4728-87b5-07f8c8ac631c2020328-1-1vef4ev.lu5nk.shp')
 

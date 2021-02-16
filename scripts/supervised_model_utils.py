@@ -1,3 +1,4 @@
+import time
 import joblib
 import os
 import sys
@@ -17,11 +18,15 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.pipeline import Pipeline
 from sklearn.model_selection import ParameterGrid, GridSearchCV
 
+from scripts import ROOT_DIR
 from scripts.utils import ts_conversion
+from scripts.logger import update_train_log, update_predict_log
 
-DATA_FOLDER = os.path.join(".", "data")
-MODEL_FOLDER = os.path.join(DATA_FOLDER, "models")
-TRAINING_DF_PATH = os.path.join(DATA_FOLDER, "df_training.csv")
+
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+MODEL_DIR = os.path.join(DATA_DIR, "models")
+TRAINING_DF_PATH = os.path.join(DATA_DIR, "df_training.csv")
+
 
 if not sys.warnoptions:
     simplefilter("ignore", category=ConvergenceWarning)
@@ -239,7 +244,18 @@ def build_and_eval_supervised_model(country, resampling_method="linear", variabl
 
 
 def param_grid_selector(param_dim):
-    if param_dim == "small":
+    # for testing only
+    if param_dim == "very_small":
+        gs_params = {
+            'variables': [('revenue', 'invoices')],
+            'scaler': [None],
+            'algorithm': ['random_forest', 'mlp'],
+            'resampling_method': ['linear'],
+            'functions': [('mean',)],
+            'day_windows': [(3, 5, 7)]
+        }
+
+    elif param_dim == "small":
         gs_params = {
             'variables': [(),
                           ('revenue', 'invoices')],
@@ -280,7 +296,7 @@ def param_grid_selector(param_dim):
 
 
 def grid_search_pipeline(country, cv=2, param_dim="small", plot_if_better=False, hm_days=30):
-    assert param_dim in ("small", "medium", "large"), "param_dim must be one of 'small', 'medium', 'large'."
+    assert param_dim in ("very_small", "small", "medium", "large"), "param_dim must be one of 'very_small', 'small', 'medium', 'large'."
 
     results = {}
     best_model = None
@@ -333,7 +349,7 @@ def save_model(model, model_params, model_name):
     model_name = model_name.replace(".joblib", "")
 
     # find the model version name
-    all_files_in_models = os.listdir(MODEL_FOLDER)
+    all_files_in_models = os.listdir(MODEL_DIR)
     all_model_names = [file.replace(".joblib", "") for file in all_files_in_models if file.endswith(".joblib")]
     version_numbers = [int(_model_name.split("_")[-1]) for _model_name in all_model_names]
     if len(version_numbers) == 0:
@@ -343,8 +359,8 @@ def save_model(model, model_params, model_name):
 
     model_name = model_name + "_" + new_version_number
 
-    model_saving_path = os.path.join(MODEL_FOLDER, model_name + ".joblib")
-    params_saving_path = os.path.join(MODEL_FOLDER, model_name + ".json")
+    model_saving_path = os.path.join(MODEL_DIR, model_name + ".joblib")
+    params_saving_path = os.path.join(MODEL_DIR, model_name + ".json")
 
     # save model
     joblib.dump(model, model_saving_path)
@@ -353,25 +369,29 @@ def save_model(model, model_params, model_name):
     with open(params_saving_path, 'w') as f:
         json.dump(model_params, f)
 
-    print(f"Model and params saved in {MODEL_FOLDER}.")
+    print(f"Model and params saved in {MODEL_DIR}.")
 
-    return model_name
+    return model_name, new_version_number
 
 
-def load_model(model_name):
+def load_model(model_name=None):
+
+    if model_name is None:
+        model_name = find_last_model()
+        print(model_name)
+
     model_name = model_name.replace(".joblib", "")
-    model_loading_path = os.path.join(MODEL_FOLDER, model_name + ".joblib")
-    params_loading_path = os.path.join(MODEL_FOLDER, model_name + ".json")
+    model_loading_path = os.path.join(MODEL_DIR, model_name + ".joblib")
 
     # load model
     loaded_model = joblib.load(model_loading_path)
 
-    return loaded_model
+    return loaded_model, model_name
 
 
 def load_model_params(model_name):
     model_name = model_name.replace(".joblib", "")
-    params_loading_path = os.path.join(MODEL_FOLDER, model_name + ".json")
+    params_loading_path = os.path.join(MODEL_DIR, model_name + ".json")
 
     # load params
     with open(params_loading_path) as f:
@@ -384,15 +404,21 @@ def load_model_params(model_name):
     return loaded_params
 
 
-def train_model(country, param_dim):
+def train_model(country, param_dim="small", test=False):
     """
     Train the model using a double gridsearch (one for the data trasformation, one for the model hyperparameters)
     and save it, ready to be called.
 
     :param country: None or a name of a country where to train the model.
-    :param param_dim: 'small', 'medium' or 'large', indicates the dimension of the parameter grid.
+    :param param_dim: 'very_small', 'small', 'medium' or 'large', indicates the dimension of the parameter grid.
+    :param test: if True, the training is being done for testing purposes.
     :return: saved model name.
     """
+
+    start_time = time.time()
+
+    if country == "null":
+        country = None
 
     best_model, best_params, r = grid_search_pipeline(country, param_dim=param_dim)
     best_avg_score = r[0][1]["errors"]["avg"]
@@ -400,12 +426,32 @@ def train_model(country, param_dim):
     print(f"Best score on test set: {best_avg_score}")
 
     model_name = f"supervised_model_{param_dim}_{country}"
-    model_name = save_model(best_model, best_params, model_name)
+    if test is False:
+        model_name, model_version = save_model(best_model, best_params, model_name)
+    else:
+        model_version = "000"
+        model_name = model_name + "_" + model_version + ".joblib"
+
+    end_time = time.time()
+    runtime = end_time-start_time
+
+    update_train_log(best_params, best_avg_score, param_dim, runtime, model_version, test)
 
     return model_name
 
 
-def score_model(model, model_params, starting_date):
+def score_model(starting_dates, model_name=None, test=False):
+
+    start_time = time.time()
+
+    if model_name is None:
+        model_name = find_last_model()
+
+    # load model and params
+    model, model_name = load_model(model_name)
+    model_params = load_model_params(model_name)
+    model_version = model_name.replace(".joblib", "").split("_")[-1]
+
     sup_df = prepare_data_for_model(country=model_params["country"],
                                     mode="test",
                                     resampling_method=model_params["resampling_method"],
@@ -415,30 +461,33 @@ def score_model(model, model_params, starting_date):
                                     day_windows=model_params["day_windows"],
                                     verbose=0)
 
-    starting_date = pd.Timestamp(starting_date)
+    starting_dates = [pd.Timestamp(sd) for sd in starting_dates]
 
-    if starting_date not in sup_df.index:
+    if any(sd not in sup_df.index for sd in starting_dates):
         start = sup_df.index.min().strftime("%Y-%m-%d")
         end = sup_df.index.max().strftime("%Y-%m-%d")
         raise KeyError(f"Acceptables dates range from {start} to {end}.")
 
-    x = sup_df.loc[starting_date].values
+    predictions = []
+    for sd in starting_dates:
+        x = sup_df.loc[sd].values
+        x = x.reshape(1, -1)
+        prediction = model.predict(x)
+        predictions.append(prediction)
 
-    x = x.reshape(1, -1)
+    end_time = time.time()
+    runtime = end_time - start_time
 
-    prediction = model.predict(x)
+    update_predict_log(predictions, starting_dates, runtime, model_version, test)
 
-    return prediction
+    return predictions
 
 
 def compare_best_with_baseline(country, best_model_name=None):
 
     # take the one with highest version number
     if best_model_name is None:
-        all_files_in_models = os.listdir(MODEL_FOLDER)
-        all_models = [file for file in all_files_in_models if file.endswith(".joblib")]
-        all_models = sorted(all_models, key=lambda x: int(x.replace(".joblib", "").split("_")[-1]))
-        best_model_name = all_models[-1]
+        best_model_name = find_last_model()
         print(best_model_name)
 
     X, y, X_train, y_train, X_test, y_test = create_train_test(country)
@@ -447,7 +496,7 @@ def compare_best_with_baseline(country, best_model_name=None):
     reg.fit(X_train, y_train)
     base_pred = reg.predict(X_test)
 
-    best_model = load_model(best_model_name)
+    best_model, best_model_name = load_model(best_model_name)
     bm_pred = best_model.predict(X_test)
 
     baseline_err = abs(y_test - base_pred)
@@ -476,17 +525,23 @@ def compare_best_with_baseline(country, best_model_name=None):
     plt.show()
 
 
+def find_last_model():
+    all_files_in_models = os.listdir(MODEL_DIR)
+    all_models = [file for file in all_files_in_models if file.endswith(".joblib")]
+    all_models = sorted(all_models, key=lambda x: int(x.replace(".joblib", "").split("_")[-1]))
+    best_model_name = all_models[-1]
+
+    return best_model_name
+
+
 if __name__ == "__main__":
     country = None
     param_dim = "small"
-    testing_date = "2018-01-25"
+    testing_dates = ["2018-01-25"]
 
     print("Training the Model")
     model_name = train_model(country, param_dim)
 
-    model = load_model(model_name)
-    model_params = load_model_params(model_name)
-
-    print(f"Testing the model on {testing_date}")
-    prediction = score_model(model, model_params, testing_date)
+    print(f"Testing the model on {testing_dates}")
+    prediction = score_model(testing_dates, model_name)
     print(prediction)
